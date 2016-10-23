@@ -3,33 +3,42 @@ import assign from 'object-assign';
 
 import defineProperty from "./utils/define-property";
 import getter from "./utils/getter";
+import pick from "./utils/pick";
 import send from "./lib/send";
 import intent from "./lib/intent-codes";
+import Channel from "./channel";
 
 const defaultPersistence = {
   onConnecting(){},
-  onConnected(){},
-  onDisconnected(){},
-  onReconnected(){},
+  onConnect(){},
+  onDisconnect(){},
+  onReconnect(){},
   onTimeout(){},
   interval: 300,
   attempts: 10
 };
 
 export default class PushrClient {
-  constructor(url, config = {}){
+  constructor(url, cfg = {}){
+    this.channels = {}
 
     let _connecting = false,
         _persistence = pick(
           assign(
             {},
             defaultPersistence,
-            (config.persistence || {})
+            cfg
           ),
           Object.keys(defaultPersistence)
         );
 
-    getter(this, 'persistence', () => assign({}, _persistence);
+    if(cfg.onAuthenticated && typeof cfg.onAuthenticated === 'function')
+      this.onAuthenticated = cfg.onAuthenticated;
+
+    if(cfg.onAuthRejected && typeof cfg.onAuthRejected === 'function')
+      this.onAuthRejected = cfg.onAuthRejected;
+
+    getter(this, 'persistence', () => assign({}, _persistence));
     getter(this, 'connected', () => ((this.sock || {}).readyState === 1));
     getter(this, 'connecting', () => _connecting);
 
@@ -44,14 +53,17 @@ export default class PushrClient {
   			if(sock.readyState > 0){
   				resolve();
   			} else {
-  				sock.addEventListener("open", resolve);
+  				sock.addEventListener("open", e => {
+            console.log('opened', e);
+            resolve();
+          });
   			}
   		});
 
   		this.didConnect
   			.then(() => {
   				_connecting = false;
-  				_persistence.onConnected();
+  				_persistence.onConnect();
           send(this, intent.AUTH_REQ, null, this.credentials);
   				sock.addEventListener("close", () => _persistence.onDisconnect());
   				if(_persistence.enabled){
@@ -62,19 +74,19 @@ export default class PushrClient {
   	};
 
     this.connect();
-    sock.addEventListener("message", m => this.dispatch(m));
+    this.sock.addEventListener("message", m => this.dispatch(m));
   }
 
   channel(topic, cfg){
     let channel;
-    if(!channel = this.channels[topic])
+    if(!(channel = this.channels[topic]))
       channel = this.channels[topic] = new Channel(this, topic, cfg);
     return channel;
   }
 
   subscribe(topic, cfg, auth){
     let channel;
-    if(!channel = this.channels[topic])
+    if(!(channel = this.channels[topic]))
       channel = this.channels[topic] = new Channel(this, topic, cfg);
 
     if(!channel.subscribed)
@@ -181,5 +193,14 @@ export default class PushrClient {
 
       // near immediately try to reconnect
       currentAttempt = setTimeout(() => attemptReconnection(), 200);
+    }
+  }
+
+  onAuthenticated(){
+    return;
+  }
+
+  onAuthRejected(){
+    return;
   }
 }

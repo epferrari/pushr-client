@@ -9,8 +9,9 @@ export default class Channel {
   constructor(client = {}, topic = "", cfg = {}){
     this.client = client;
     this.topic = topic;
-    listeners = [];
-    subscribed = false;
+
+    let listeners = [],
+        subscribed = false;
 
     getter(this, 'subscribed', () => subscribed);
 
