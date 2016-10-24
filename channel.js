@@ -2,44 +2,34 @@
 
 import defineProperty from "./utils/define-property";
 import getter from "./utils/getter";
-import send from "./lib/send";
-import intent from "./lib/intent-codes";
+import intents from "./lib/intents";
+import EventEmitter from 'events';
 
-export default class Channel {
+export default class Channel extends EventEmitter {
   constructor(client = {}, topic = "", cfg = {}){
+    super();
+
     this.client = client;
     this.topic = topic;
 
-    let listeners = [],
-        subscribed = false;
+    let subscribed = false;
 
     getter(this, 'subscribed', () => subscribed);
 
-    defineProperty(this, 'onSubscribe', function onSubscribe(payload){
+    defineProperty(this, 'channelDidOpen', function channelDidOpen(payload){
       subscribed = true;
-      cfg.onSubscribe && cfg.onSubscribe(payload);
+      cfg.channelDidOpen && cfg.channelDidOpen(payload);
     });
 
-    defineProperty(this, 'onClose', function onClose(payload){
+    defineProperty(this, 'channelDidClose', function channelDidClose(payload){
       subscribed = false;
-      cfg.onClose && cfg.onClose(payload);
-    });
-
-    defineProperty(this, 'onMessage', function onMessage(handler){
-      listeners.push(handler);
-      return () => {
-        listeners = listeners.filter(fn => fn != handler);
-      }
-    });
-
-    defineProperty(this, 'notify', function notify(payload){
-      listeners.forEach(fn => fn(payload));
+      cfg.channelDidClose && cfg.channelDidClose(payload);
     });
 
     [
-      'onWillSubscribe',
-      'onSubRejected',
-      'onWillClose'
+      'channelWillOpen',
+      'channelDidReject',
+      'channelWillClose'
     ]
     .forEach(handler => cfg[handler] && (this[handler] = cfg[handler]));
   }
@@ -49,17 +39,17 @@ export default class Channel {
       this.auth = auth;
 
     if(!this.subscribed){
-      this.onWillSubscribe && this.onWillSubscribe();
-      send(this.client, intent.SUB_REQ, {topic: this.topic}, this.auth);
+      this.channelWillOpen && this.channelWillOpen();
+      this.client.$send(intents.SUB_REQ, this.topic, {auth: this.auth});
     }
   }
 
   close(){
-    this.onWillClose && this.onWillClose();
-    send(this.client, intent.UNS_REQ, {topic: this.topic});
+    this.channelWillClose && this.channelWillClose();
+    this.client.$send(intents.UNS_REQ, this.topic);
   }
 
-  onWillSubscribe(){}
-  onSubRejected(){}
-  onWillClose(){}
+  channelWillOpen(){}
+  channelDidReject(){}
+  channelWillClose(){}
 }

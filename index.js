@@ -4,22 +4,35 @@ import assign from 'object-assign';
 import defineProperty from "./utils/define-property";
 import getter from "./utils/getter";
 import pick from "./utils/pick";
-import send from "./lib/send";
-import intent from "./lib/intent-codes";
+import intents from "./lib/intents";
 import Channel from "./channel";
+import EventEmitter from "events";
 
-const defaultPersistence = {
-  onConnecting(){},
-  onConnect(){},
-  onDisconnect(){},
-  onReconnect(){},
-  onTimeout(){},
-  interval: 300,
-  attempts: 10
+const events = {
+  CONNECTING: 'connecting',
+  CONNECTED: 'connected',
+  DISCONNECTED: 'disconnected',
+  TIMEOUT: 'timeout',
+  RECONNECTED: 'reconnected',
+  AUTHENTICATED: 'authenticated',
+  AUTH_REJECTED: 'auth_rejected'
 };
 
-export default class PushrClient {
+const defaultPersistence = {
+  interval: 1000,
+  attempts: 30,
+  enabled: true
+};
+
+export default class PushrClient extends EventEmitter {
+
+  static get events(){
+    return events;
+  }
+
   constructor(url, cfg = {}){
+    super();
+
     this.channels = {}
 
     let _connecting = false,
@@ -30,21 +43,28 @@ export default class PushrClient {
             cfg
           ),
           Object.keys(defaultPersistence)
-        );
-
-    if(cfg.onAuthenticated && typeof cfg.onAuthenticated === 'function')
-      this.onAuthenticated = cfg.onAuthenticated;
-
-    if(cfg.onAuthRejected && typeof cfg.onAuthRejected === 'function')
-      this.onAuthRejected = cfg.onAuthRejected;
+        ),
+        reconnect = this.reconnect.bind(this);
 
     getter(this, 'persistence', () => assign({}, _persistence));
     getter(this, 'connected', () => ((this.sock || {}).readyState === 1));
     getter(this, 'connecting', () => _connecting);
 
+    this.disablePersistence = () => {
+      if(_persistence.enabled && this.sock)
+        this.sock.removeEventListener("close", reconnect);
+      _persistence.enabled = false;
+    };
+
+    this.enablePersistence = () => {
+      if(!_persistence.enabled && this.sock)
+        this.sock.addEventListener("close", reconnect);
+      _persistence.enabled = true;
+    };
+
     this.connect = function connect(){
-      _persistence.onConnecting();
   		_connecting = true;
+      this.emit(events.CONNECTING);
 
       let sock = this.sock = new SockJS(url);
 
@@ -53,28 +73,35 @@ export default class PushrClient {
   			if(sock.readyState > 0){
   				resolve();
   			} else {
-  				sock.addEventListener("open", e => {
-            console.log('opened', e);
-            resolve();
-          });
+  				sock.addEventListener("open", resolve);
   			}
   		});
 
   		this.didConnect
   			.then(() => {
-  				_connecting = false;
-  				_persistence.onConnect();
-          send(this, intent.AUTH_REQ, null, this.credentials);
-  				sock.addEventListener("close", () => _persistence.onDisconnect());
+          this.sock.addEventListener("message", m => this.dispatch(m));
+
+          _connecting = false;
+
+          this.emit(events.CONNECTED);
+          this.$send(intents.AUTH_REQ, null, {auth: this.credentials});
+  				sock.addEventListener("close", () => {
+            Object.keys(this.channels).forEach(topic => {
+              this.channels[topic].channelDidClose();
+            });
+            this.emit(events.DISCONNECTED);
+          });
   				if(_persistence.enabled){
   					// reset up a persistent connection, aka attempt to reconnect if the connection closes
-  					sock.addEventListener("close", () => this.reconnect());
+  					sock.addEventListener("close", reconnect);
   				}
   			});
   	};
+  }
 
-    this.connect();
-    this.sock.addEventListener("message", m => this.dispatch(m));
+  close(){
+    this.disablePersistence();
+    this.sock && this.sock.close();
   }
 
   channel(topic, cfg){
@@ -100,7 +127,7 @@ export default class PushrClient {
     if(channel)
       channel.close();
     else
-      send(this, intent.UNS_REQ, {topic});
+      this.$send(intents.UNS_REQ, topic);
   }
 
   dispatch(message = {}){
@@ -110,34 +137,36 @@ export default class PushrClient {
       return;
     }
 
-    let {topic, intent, payload} = message;
+    let {intent, topic, event, payload} = message;
     let channel = this.channels[topic];
 
-
     switch(intent){
-      case intent.AUTH_ACK:
-        this.onAuthenticated && this.onAuthenticated(payload);
+      case intents.AUTH_ACK:
+        this.emit(events.AUTHENTICATED, payload);
         break;
-      case intent.AUTH_REJ:
-        this.onAuthRejected && this.onAuthRejected(payload);
+      case intents.AUTH_REJ:
+        this.emit(events.AUTH_REJECTED, payload);
         break;
-      case intent.SUB_ACK:
+      case intents.SUB_ACK:
         if(channel)
-          channel.onSubscribe(payload);
+          channel.channelDidOpen(payload);
         else
-          send(this, intent.UNS_REQ, topic);
+          this.$send(intent.UNS_REQ, topic);
         break;
-      case intent.SUB_REJ:
+      case intents.SUB_REJ:
         if(channel)
-          channel.onSubRejected(payload);
+          channel.channelDidReject(payload);
         break;
-      case intent.UNS_ACK:
+      case intents.UNS_ACK:
         if(channel)
-          channel.onClose();
+          channel.channelDidClose();
         break;
-      case intent.POST:
-        if(channel)
-          channel.notify(payload);
+      case intents.PUSH:
+        if(channel){
+          event && channel.emit(event, payload);
+          // allow generic handler for all messages regardless of event
+          channel.onmessage && channel.onmessage(payload, event);
+        }
         break;
       default:
         break;
@@ -153,7 +182,8 @@ export default class PushrClient {
 			let attemptReconnection = () => {
 				if(!attemptsRemaining){
 					// Failure, stop trying to reconnect
-					this.persistence.onTimeout();
+          clearTimeout(currentAttempt);
+					this.emit(events.TIMEOUT);
 				} else {
 					let delay, {interval} = this.persistence;
 
@@ -174,19 +204,20 @@ export default class PushrClient {
 					// resets `this.didConnect` to a new Promise resolved by `this.sock`
 					this.connect();
 
-					// re-open all channels
-          Object.keys(this.channels).forEach(topic => {
-            this.channels[topic].open();
-          });
-
-					// re-apply the message handling multiplexer
-					this.sock.addEventListener("message", m => this.dispatch(m));
-
-					// Success, stop trying to reconnect,
 					this.didConnect.then(() => {
+            // Success, stop trying to reconnect,
 						attemptsRemaining = 0;
 						clearTimeout(currentAttempt);
-						this.persistence.onReconnect();
+
+            // re-open all channels
+            Object.keys(this.channels).forEach(topic => {
+              this.channels[topic].open();
+            });
+
+  					// re-apply the message handling multiplexer to the new sockjs instance
+  					this.sock.addEventListener("message", m => this.dispatch(m));
+
+						this.emit(events.RECONNECTED);
 					});
 				}
 			};
@@ -196,11 +227,28 @@ export default class PushrClient {
     }
   }
 
-  onAuthenticated(){
+  $send(intent, topic, payload = {}){
+    let send = () =>
+      this.sock.send(JSON.stringify({
+        intent,
+        topic,
+        payload: assign({}, {auth: this.credentials}, payload)
+      }));
+
+    if(this.connected){
+      send();
+    }else if(this.sock){
+      this.didConnect.then(send);
+    }else{
+      this.once(events.CONNECTED, send);
+    }
+  };
+
+  didAuthenticate(){
     return;
   }
 
-  onAuthRejected(){
+  handleAuthRejection(){
     return;
   }
 }
