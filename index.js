@@ -137,7 +137,7 @@ export default class PushrClient extends EventEmitter {
       return;
     }
 
-    let {intent, topic, event, payload} = message;
+    let {intent, topic, payload} = message;
     let channel = this.channels[topic];
 
     switch(intent){
@@ -163,9 +163,10 @@ export default class PushrClient extends EventEmitter {
         break;
       case intents.PUSH:
         if(channel){
-          event && channel.emit(event, payload);
+          let {event, data} = payload;
+          payload.event && channel.emit(event, data);
           // allow generic handler for all messages regardless of event
-          channel.onmessage && channel.onmessage(payload, event);
+          channel.onmessage && channel.onmessage(data, event);
         }
         break;
       default:
