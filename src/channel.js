@@ -1,5 +1,6 @@
 "use strict";
 
+import assign from "object-assign";
 import defineProperty from "./utils/define-property";
 import getter from "./utils/getter";
 import intents from "./lib/intents";
@@ -34,13 +35,10 @@ export default class Channel extends EventEmitter {
     .forEach(handler => cfg[handler] && (this[handler] = cfg[handler]));
   }
 
-  open(auth){
-    if(auth)
-      this.auth = auth;
-
+  open(){
     if(!this.subscribed){
       this.channelWillOpen && this.channelWillOpen();
-      this.client.send(intents.SUB_REQ, this.topic, {auth: this.auth});
+      this.client.send(intents.SUB_REQ, this.topic, {auth: client.auth});
     }
   }
 

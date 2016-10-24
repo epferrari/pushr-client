@@ -54,6 +54,7 @@ export default class PushrClient extends EventEmitter {
     getter(this, 'state', () => _state);
     getter(this, 'persistence', () => assign({}, _persistence));
     getter(this, 'connected', () => ((this.sock || {}).readyState === 1));
+    getter(this, 'auth', () => cfg.auth);
 
     this.disablePersistence = () => {
       if(_persistence.enabled && this.sock)
@@ -107,7 +108,7 @@ export default class PushrClient extends EventEmitter {
         this.sock.addEventListener("message", dispatch);
 
         this.emit(events.CONNECTED);
-        this.send(intents.AUTH_REQ, null, {auth: cfg.auth});
+        this.send(intents.AUTH_REQ, null, {auth: this.auth});
 
         this.sock.addEventListener("close", () => {
           this.sock = null;
