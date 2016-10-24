@@ -1,22 +1,16 @@
 import SockJS from 'sockjs-client';
 import assign from 'object-assign';
 
+import EventEmitter from "events";
+import Channel from "./channel";
+
 import defineProperty from "./utils/define-property";
 import getter from "./utils/getter";
 import pick from "./utils/pick";
-import intents from "./lib/intents";
-import Channel from "./channel";
-import EventEmitter from "events";
 
-const events = {
-  CONNECTING: 'connecting',
-  CONNECTED: 'connected',
-  DISCONNECTED: 'disconnected',
-  TIMEOUT: 'timeout',
-  RECONNECTED: 'reconnected',
-  AUTHENTICATED: 'authenticated',
-  AUTH_REJECTED: 'auth_rejected'
-};
+import intents from "./lib/intents";
+import events from "./lib/events";
+import states from "./lib/states";
 
 const defaultPersistence = {
   interval: 1000,
@@ -30,25 +24,36 @@ export default class PushrClient extends EventEmitter {
     return events;
   }
 
+  static get states(){
+    return states;
+  }
+
   constructor(url, cfg = {}){
     super();
 
     this.channels = {}
 
-    let _connecting = false,
-        _persistence = pick(
-          assign(
-            {},
-            defaultPersistence,
-            cfg
-          ),
-          Object.keys(defaultPersistence)
-        ),
-        reconnect = this.reconnect.bind(this);
+    let
+    _state = states.READY,
+    _connecting = false,
+    _persistence = pick(
+      assign(
+        {},
+        defaultPersistence,
+        cfg
+      ),
+      Object.keys(defaultPersistence)
+    ),
+    reconnect = this.reconnect.bind(this),
+    dispatch = this.dispatch.bind(this),
+    checkStateChange = lastState => {
+      if(lastState !== _state)
+        this.emit(events.STATE_CHANGE, _state, lastState);
+    };
 
+    getter(this, 'state', () => _state);
     getter(this, 'persistence', () => assign({}, _persistence));
     getter(this, 'connected', () => ((this.sock || {}).readyState === 1));
-    getter(this, 'connecting', () => _connecting);
 
     this.disablePersistence = () => {
       if(_persistence.enabled && this.sock)
@@ -62,46 +67,59 @@ export default class PushrClient extends EventEmitter {
       _persistence.enabled = true;
     };
 
+    this
+    .on(events.CONNECTING, () => {
+      let lastState = _state;
+      _state = states.CONNECTING;
+      checkStateChange(lastState);
+    })
+    .on(events.CONNECTED, () => {
+      let lastState = _state;
+      _state = this.connected ? states.CONNECTED : lastState;
+      checkStateChange(lastState);
+    })
+    .on(events.DISCONNECTED, () => {
+      let lastState = _state;
+      _state = states.DISCONNECTED;
+      checkStateChange(lastState);
+    })
+    .on(events.TIMEOUT, () => {
+      let lastState = _state;
+      _state = states.TIMED_OUT;
+      checkStateChange(lastState);
+    });
+
+
     this.connect = function connect(){
-  		_connecting = true;
       this.emit(events.CONNECTING);
 
-      let sock = this.sock = new SockJS(url);
+      this.sock = new SockJS(url);
 
   		// create connection Promise
-  		this.didConnect = new Promise( (resolve) => {
-  			if(sock.readyState > 0){
+  		return this.didConnect = new Promise( (resolve) => {
+  			if(this.sock.readyState > 0){
   				resolve();
   			} else {
-  				sock.addEventListener("open", resolve);
+  				this.sock.addEventListener("open", resolve);
   			}
-  		});
+  		})
+      .then(() => {
+        this.sock.addEventListener("message", dispatch);
 
-  		this.didConnect
-  			.then(() => {
-          this.sock.addEventListener("message", m => this.dispatch(m));
+        this.emit(events.CONNECTED);
+        this.send(intents.AUTH_REQ, null, {auth: this.credentials});
 
-          _connecting = false;
+        this.sock.addEventListener("close", () => {
+          this.sock = null;
+          this.closeAllChannels();
+          this.emit(events.DISCONNECTED);
+        });
 
-          this.emit(events.CONNECTED);
-          this.$send(intents.AUTH_REQ, null, {auth: this.credentials});
-  				sock.addEventListener("close", () => {
-            Object.keys(this.channels).forEach(topic => {
-              this.channels[topic].channelDidClose();
-            });
-            this.emit(events.DISCONNECTED);
-          });
-  				if(_persistence.enabled){
-  					// reset up a persistent connection, aka attempt to reconnect if the connection closes
-  					sock.addEventListener("close", reconnect);
-  				}
-  			});
+        // reset up a persistent connection, aka attempt to reconnect if the connection closes
+        if(_persistence.enabled)
+          this.sock.addEventListener("close", reconnect);
+			});
   	};
-  }
-
-  close(){
-    this.disablePersistence();
-    this.sock && this.sock.close();
   }
 
   channel(topic, cfg){
@@ -127,7 +145,7 @@ export default class PushrClient extends EventEmitter {
     if(channel)
       channel.close();
     else
-      this.$send(intents.UNS_REQ, topic);
+      this.send(intents.UNS_REQ, topic);
   }
 
   dispatch(message = {}){
@@ -151,7 +169,7 @@ export default class PushrClient extends EventEmitter {
         if(channel)
           channel.channelDidOpen(payload);
         else
-          this.$send(intent.UNS_REQ, topic);
+          this.send(intent.UNS_REQ, topic);
         break;
       case intents.SUB_REJ:
         if(channel)
@@ -174,61 +192,70 @@ export default class PushrClient extends EventEmitter {
     }
   }
 
+  close(){
+    this.disablePersistence();
+    let close = () => this.sock.close();
+    if(this.sock){
+      close();
+    }else{
+      this.didConnect.then(close);
+    }
+  }
+
+  closeAllChannels(){
+    Object.keys(this.channels).forEach(topic => {
+      this.channels[topic].channelDidClose();
+    });
+  }
+
+  openAllChannels(){
+    Object.keys(this.channels).forEach(topic => {
+      this.channels[topic].open();
+    });
+  }
+
+  onStateChange(handler){
+    this.on(events.STATE_CHANGE, handler);
+    return () => this.off(events.STATE_CHANGE, handler);
+  }
+
   reconnect(){
-    if(!this.connecting){
-			let attemptsMade = 0;
-		  let attemptsRemaining = this.persistence.attempts;
-			let currentAttempt;
+    if(this.state !== states.CONNECTING){
+			let remaining = this.persistence.attempts, currentAttempt;
 
 			let attemptReconnection = () => {
-				if(!attemptsRemaining){
+				if(!remaining){
 					// Failure, stop trying to reconnect
           clearTimeout(currentAttempt);
 					this.emit(events.TIMEOUT);
 				} else {
 					let delay, {interval} = this.persistence;
 
-					// setup to try again after interval
 					if(typeof interval === 'number'){
 						delay = interval;
 					} else if(typeof interval === 'function'){
-						delay = interval(attemptsMade);
+						delay = interval(this.persistence.attempts - remaining);
 					}
 
+          remaining--;
 					currentAttempt = setTimeout(() => attemptReconnection(), delay);
-					attemptsMade++;
-					attemptsRemaining--;
 
-
-					// attempt to re-establish the websocket connection
-					// resets `this.sock`
-					// resets `this.didConnect` to a new Promise resolved by `this.sock`
-					this.connect();
-
-					this.didConnect.then(() => {
+					this.connect().then(() => {
             // Success, stop trying to reconnect,
-						attemptsRemaining = 0;
+						remaining = 0;
 						clearTimeout(currentAttempt);
-
-            // re-open all channels
-            Object.keys(this.channels).forEach(topic => {
-              this.channels[topic].open();
-            });
-
-  					// re-apply the message handling multiplexer to the new sockjs instance
-  					this.sock.addEventListener("message", m => this.dispatch(m));
-
+            this.openAllChannels();
 						this.emit(events.RECONNECTED);
 					});
 				}
 			};
 
-      // near immediately try to reconnect
+      // start trying to reconnect as soon as the connection is lost
       currentAttempt = setTimeout(() => attemptReconnection(), 200);
     }
   }
 
-  $send(intent, topic, payload = {}){
+  send(intent, topic, payload = {}){
     let send = () =>
       this.sock.send(JSON.stringify({
         intent,
@@ -245,11 +272,7 @@ export default class PushrClient extends EventEmitter {
     }
   };
 
-  didAuthenticate(){
-    return;
-  }
+  didAuthenticate(){}
 
-  handleAuthRejection(){
-    return;
-  }
+  handleAuthRejection(){}
 }

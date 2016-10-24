@@ -40,13 +40,13 @@ export default class Channel extends EventEmitter {
 
     if(!this.subscribed){
       this.channelWillOpen && this.channelWillOpen();
-      this.client.$send(intents.SUB_REQ, this.topic, {auth: this.auth});
+      this.client.send(intents.SUB_REQ, this.topic, {auth: this.auth});
     }
   }
 
   close(){
     this.channelWillClose && this.channelWillClose();
-    this.client.$send(intents.UNS_REQ, this.topic);
+    this.client.send(intents.UNS_REQ, this.topic);
   }
 
   channelWillOpen(){}
