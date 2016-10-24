@@ -107,7 +107,7 @@ export default class PushrClient extends EventEmitter {
         this.sock.addEventListener("message", dispatch);
 
         this.emit(events.CONNECTED);
-        this.send(intents.AUTH_REQ, null, {auth: this.credentials});
+        this.send(intents.AUTH_REQ, null, {auth: cfg.auth});
 
         this.sock.addEventListener("close", () => {
           this.sock = null;
