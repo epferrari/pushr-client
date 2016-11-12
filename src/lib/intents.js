@@ -18,7 +18,7 @@ module.exports = {
   CLOSE_ACK: 14,      // connection close acknowledgement (server => client)
   CLOSE_ERR: 15,      // connection close error (server => client)
 
-  INVLD_INT: 16,   // invalid message intent (server => client)
+  INVLD_INT: 16,      // invalid message intent (server => client)
   INVLD_MSG: 17,      // invalid message shape (server => client)
   PUSH: 18,           // message pushed from server (server => client)
 
