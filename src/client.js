@@ -111,7 +111,7 @@ export default class PushrClient extends EventEmitter {
         this.sock.addEventListener("message", dispatch);
 
         this.emit(events.CONNECTED);
-        this.send(intents.AUTH_REQ, null, {auth: this.auth});
+        this.send(intents.AUTH_REQ);
 
         this.sock.addEventListener("close", () => {
           this.sock = null;
@@ -149,13 +149,13 @@ export default class PushrClient extends EventEmitter {
     if(channel)
       channel.close();
     else
-      this.send(intents.UNS_REQ, topic);
+      this.send(intents.UNS_REQ, {topic});
   }
 
   dispatch(transportMessageEvent = {}){
     let message;
     try {
-      message = JSON.parse(message.data);
+      message = JSON.parse(transportMessageEvent.data);
     }catch(e){
       return;
     }
@@ -248,13 +248,12 @@ export default class PushrClient extends EventEmitter {
     }
   }
 
-  send(intent, topic, payload = {}){
+  send(intent, message = {}){
+    message.intent = intent;
+    message.auth = assign({}, this.auth, message.auth);
+
     let send = () =>
-      this.sock.send(JSON.stringify({
-        intent,
-        topic,
-        payload: assign({}, {auth: this.credentials}, payload)
-      }));
+      this.sock.send(JSON.stringify(message));
 
     if(this.connected){
       send();
@@ -264,6 +263,10 @@ export default class PushrClient extends EventEmitter {
       this.once(events.CONNECTED, send);
     }
   };
+
+  post(message){
+    this.send(intents.PUB_REQ, message);
+  }
 
   didAuthenticate(){}
 

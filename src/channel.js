@@ -61,16 +61,16 @@ export default class Channel extends EventEmitter {
     );
   }
 
-  open(){
+  open(auth){
     if(!this.subscribed){
       this._lifecycle.emit(Channel.events.channelWillOpen);
-      this.client.send(intents.SUB_REQ, this.topic, {auth: this.client.auth});
+      this.client.send(intents.SUB_REQ, {topic: this.topic, auth});
     }
   }
 
   close(){
     this._lifecycle.emit(Channel.events.channelWillClose, payload);
-    this.client.send(intents.UNS_REQ, this.topic);
+    this.client.send(intents.UNS_REQ, {topic: this.topic});
   }
 
   onWillOpen(fn){

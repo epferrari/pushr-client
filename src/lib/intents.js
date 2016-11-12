@@ -21,7 +21,6 @@ module.exports = keyMirror([
   "INTENT_ERR",     // invalid message intent (server => client)
 
   "MSG",            // message pushed from server (server => client)
-  "MSG_SELF",       // messaged pushed from client to itself ([client] ~> server => client)
   "MSG_ERR",        // invalid message shape (server => client)
 
   "PUB_REQ",        // message pushed from client (client => server ~> [clients])
