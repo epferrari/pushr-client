@@ -92,6 +92,9 @@ export default class PushrClient extends EventEmitter {
 
 
     this.connect = function connect(){
+      if(cfg.enabled !== false)
+        this.enablePersistence();
+        
       this.emit(events.CONNECTING);
 
       this.sock = new SockJS(url);
@@ -166,30 +169,8 @@ export default class PushrClient extends EventEmitter {
       case intents.AUTH_REJ:
         this.emit(events.AUTH_REJECTED, payload);
         break;
-      case intents.SUB_ACK:
-        if(channel)
-          channel.channelDidOpen(payload);
-        else
-          this.send(intent.UNS_REQ, topic);
-        break;
-      case intents.SUB_REJ:
-        if(channel)
-          channel.channelDidReject(payload);
-        break;
-      case intents.UNS_ACK:
-        if(channel)
-          channel.channelDidClose();
-        break;
-      case intents.PUSH:
-        if(channel){
-          let {event, data} = payload;
-          payload.event && channel.emit(event, data);
-          // allow generic handler for all messages regardless of event
-          channel.onmessage && channel.onmessage(data, event);
-        }
-        break;
       default:
-        break;
+        channel && channel.handleIntent(intent, payload);
     }
   }
 
@@ -205,7 +186,14 @@ export default class PushrClient extends EventEmitter {
 
   closeAllChannels(){
     Object.keys(this.channels).forEach(topic => {
-      this.channels[topic].channelDidClose();
+      let channel = this.channels[topic];
+      if(this.sock){
+        // unsubscribe each via the websocket
+        channel.close();
+      }else {
+        // connection is gone, force close all
+        channel.handleIntent(intents.UNS_ACK);
+      }
     });
   }
 
@@ -217,7 +205,7 @@ export default class PushrClient extends EventEmitter {
 
   onStateChange(handler){
     this.on(events.STATE_CHANGE, handler);
-    return () => this.off(events.STATE_CHANGE, handler);
+    return () => this.removeListener(events.STATE_CHANGE, handler);
   }
 
   reconnect(){
