@@ -28,25 +28,27 @@ export default class Channel extends EventEmitter {
 
     getter(this, 'subscribed', () => subscribed);
 
-    defineProperty(this, 'handleIntent', (intent, payload) => {
+    defineProperty(this, 'handleIntent', (intent, message = {}) => {
+      let {payload, error} = message;
+
       switch(intent){
         case intents.SUB_ACK:
           subscribed = true;
           this._lifecycle.emit(Channel.events.channelDidOpen, payload);
           break;
         case intents.SUB_REJ:
-          this._lifecycle.emit(Channel.events.channelRejected, payload);
+          this._lifecycle.emit(Channel.events.channelRejected, error);
           break;
         case intents.UNS_ACK:
           subscribed = false;
           this._lifecycle.emit(Channel.events.channelDidClose, payload);
           break;
-        case intents.PUSH:
-          let {event, data} = payload;
+        case intents.MSG:
+          let {event, _self} = message;
           // allow generic handler for all messages regardless of event
-          this._lifecycle.emit(Channel.events.messageReceived, data, event);
+          this._lifecycle.emit(Channel.events.messageReceived, payload, event, _self);
           // call specific handlers for events
-          event && this.emit(event, data);
+          event && this.emit(event, payload, _self);
           break;
         default:
           return;

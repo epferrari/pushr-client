@@ -94,7 +94,7 @@ export default class PushrClient extends EventEmitter {
     this.connect = function connect(){
       if(cfg.enabled !== false)
         this.enablePersistence();
-        
+
       this.emit(events.CONNECTING);
 
       this.sock = new SockJS(url);
@@ -152,25 +152,29 @@ export default class PushrClient extends EventEmitter {
       this.send(intents.UNS_REQ, topic);
   }
 
-  dispatch(message = {}){
+  dispatch(transportMessageEvent = {}){
+    let message;
     try {
       message = JSON.parse(message.data);
     }catch(e){
       return;
     }
 
-    let {intent, topic, payload} = message;
+    let {intent, topic, payload, error} = message;
     let channel = this.channels[topic];
 
     switch(intent){
+      case intents.CONN_ACK:
+        this.client_id = payload.client_id;
+        break;
       case intents.AUTH_ACK:
         this.emit(events.AUTHENTICATED, payload);
         break;
       case intents.AUTH_REJ:
-        this.emit(events.AUTH_REJECTED, payload);
+        this.emit(events.AUTH_REJECTED, error);
         break;
       default:
-        channel && channel.handleIntent(intent, payload);
+        channel && channel.handleIntent(intent, message);
     }
   }
 
